@@ -5,8 +5,7 @@
 // 1. SEGURANÇA E CONFIGURAÇÃO
 // ==================================================================
 
-// Token simples para impedir acesso não autorizado via URL
-// Defina isso nas Variáveis de Ambiente ou deixe fixo se preferir
+// Token de segurança
 $meuTokenSecreto = getenv('CRON_SECRET') ?: 'coloque_uma_senha_dificil_aqui_123';
 
 if (!isset($_GET['token']) || $_GET['token'] !== $meuTokenSecreto) {
@@ -14,15 +13,14 @@ if (!isset($_GET['token']) || $_GET['token'] !== $meuTokenSecreto) {
     die("Acesso negado: Token inválido.");
 }
 
-// Configurações do Banco e API
-// No Render, o host interno geralmente não precisa de SSL, mas o padrão pgsql funciona.
-$dbHost = getenv('DB_HOST') ?: 'dpg-d3lbqr95pdvs73acpvo0-a'; 
-$dbName = getenv('DB_NAME') ?: 'DBNAME';
+// --- DADOS DO BANCO ---
+$dbHost = getenv('DB_HOST') ?: 'dpg-d3lbqr95pdvs73acpvo0-a.oregon-postgres.render.com';
+$dbName = getenv('DB_NAME') ?: 'vaquejada_meob';
 $dbUser = getenv('DB_USER') ?: 'vaquejada';
-$dbPass = getenv('DB_PASS') ?: 'SUA_SENHA'; // Configure isso no Render Environment
+$dbPass = getenv('DB_PASS') ?: 'SUA_SENHA_REAL_AQUI';
 $dbPort = '5432';
 
-// Token do Mercado Pago (Production Access Token)
+// Token do Mercado Pago
 $mpAccessToken = getenv('MP_TOKEN') ?: 'SEU_TOKEN_MP';
 
 // Tempo limite (10 minutos)
@@ -33,15 +31,21 @@ $timeoutMinutes = 10;
 // ==================================================================
 
 try {
-    $dsn = "pgsql:host=$dbHost;port=$dbPort;dbname=$dbName";
+    // CORREÇÃO CRÍTICA AQUI: Adicionado ";sslmode=require"
+    $dsn = "pgsql:host=$dbHost;port=$dbPort;dbname=$dbName;sslmode=require";
     
     $pdo = new PDO($dsn, $dbUser, $dbPass, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_TIMEOUT => 10
     ]);
+
+    // Linha de teste (pode comentar depois)
+    // echo "Conectado com sucesso ao banco!<br>"; 
+
 } catch (PDOException $e) {
     http_response_code(500);
+    // Exibe o erro completo para facilitar o debug
     die("Erro Crítico na Conexão DB: " . $e->getMessage());
 }
 
