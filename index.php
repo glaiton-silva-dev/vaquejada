@@ -49,7 +49,6 @@ try {
     die("Erro Crítico na Conexão DB: " . $e->getMessage());
 }
 
-
 // ==================================================================
 // 3. LÓGICA DE PROCESSAMENTO
 // ==================================================================
@@ -57,10 +56,10 @@ try {
 echo "<h3>[" . date('Y-m-d H:i:s') . "] Iniciando verificação de pagamentos...</h3>";
 
 // 1. QUERY AJUSTADA:
-// - Usamos aspas duplas " " nas colunas camelCase.
-$sql = 'SELECT id, "subscriptionId", "mpPaymentId", "createdAt", "externalReference" 
+// Trazemos "mpPreferenceId" para poder buscar caso falte o "mpPaymentId"
+$sql = 'SELECT id, "subscriptionId", "mpPaymentId", "mpPreferenceId", "createdAt", "externalReference" 
         FROM payments 
-        WHERE status = \'pending\''; 
+        WHERE status = \'pending\' AND id = \'4c0809b5-a501-4926-a75a-54d3d6efd58b\''; 
 
 try {
     $stmt = $pdo->query($sql);
@@ -78,28 +77,45 @@ if (count($payments) === 0) {
 foreach ($payments as $payment) {
     $paymentId = $payment['id'];
     
-    // 2. CORREÇÃO NAS CHAVES DO ARRAY:
-    // O PDO retorna o nome da coluna exatamente como no SELECT ("subscriptionId")
+    // CORREÇÃO NAS CHAVES DO ARRAY:
     $subId = $payment['subscriptionId']; 
-    $mpId = $payment['mpPaymentId'];
-    $createdAtVal = $payment['createdAt']; // Renomeei para evitar conflito
+    $mpId = $payment['mpPaymentId'];        // Pode vir NULL ou Vazio
+    $mpPrefId = $payment['mpPreferenceId']; // Usado para buscar se mpId for nulo
+    $externalReference = $payment['externalReference'];
+    $createdAtVal = $payment['createdAt']; 
     
     // Tratamento de Datas
     $createdAt = new DateTime($createdAtVal);
     $now = new DateTime();
-    
-    // Diferença em minutos
     $diffMinutes = ($now->getTimestamp() - $createdAt->getTimestamp()) / 60;
 
     echo "<strong>Processando Pagamento ID:</strong> $paymentId <br>";
     echo "&nbsp;&nbsp;- Tempo decorrido: " . round($diffMinutes, 1) . " min.<br>";
 
-    // --- CASO 1: Expirou o tempo (> 10 min) ---
-    if ($diffMinutes > $timeoutMinutes) {
-        echo "&nbsp;&nbsp;- <span style='color:red'>EXPIRADO. Cancelando localmente...</span><br>";
-        markAsClosed($pdo, $paymentId, $subId, 'cancelled');
-        echo "<hr>";
-        continue; // Vai para o próximo
+    // ==================================================================
+    // NOVA LÓGICA: RECUPERAR ID PELA PREFERÊNCIA
+    // ==================================================================
+    if (empty($mpId) && !empty($mpPrefId)) {
+        echo "&nbsp;&nbsp;- ID do Pagamento vazio. Buscando pela preferência ($mpPrefId)...<br>";
+        
+        $foundPayment = searchPaymentIdByPreference($externalReference, $mpAccessToken);
+        
+        if ($foundPayment) {
+            $mpId = $foundPayment['id']; // Recuperamos o ID!
+            $statusEncontrado = $foundPayment['status'];
+            
+            echo "&nbsp;&nbsp;- <span style='color:purple'>ENCONTRADO: ID $mpId (Status: $statusEncontrado)</span><br>";
+            
+            // Atualiza o banco imediatamente para não precisar buscar de novo na próxima
+            try {
+                $stmtUpd = $pdo->prepare('UPDATE payments SET "mpPaymentId" = ? WHERE id = ?');
+                $stmtUpd->execute([$mpId, $paymentId]);
+            } catch (Exception $e) {
+                echo "&nbsp;&nbsp;- Erro ao salvar ID recuperado: " . $e->getMessage() . "<br>";
+            }
+        } else {
+            echo "&nbsp;&nbsp;- Nenhum pagamento encontrado para esta preferência ainda.<br>";
+        }
     }
 
     // --- CASO 2: Verificar status no Mercado Pago ---
@@ -121,17 +137,41 @@ foreach ($payments as $payment) {
             echo "&nbsp;&nbsp;- <span style='color:orange'>Não foi possível obter status do MP.</span><br>";
         }
     } else {
-        echo "&nbsp;&nbsp;- Sem ID do MP, aguardando webhook ou tempo limite.<br>";
+      echo "&nbsp;&nbsp;- Sem ID do MP, aguardando cliente pagar...<br>";  
     }
     echo "<hr>";
 }
 
 echo "<h4>Verificação concluída com sucesso.</h4>";
 
+// ==================================================================
+// 4. FUNÇÕES AUXILIARES
+// ==================================================================
 
-// ==================================================================
-// 4. FUNÇÕES AUXILIARES (AJUSTADAS PARA O SCHEMA)
-// ==================================================================
+function searchPaymentIdByPreference($preferenceId, $token) {
+    $url = "https://api.mercadopago.com/v1/payments/search?external_reference=$preferenceId&sort=date_created&criteria=desc&limit=1";
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Authorization: Bearer $token",
+        "Content-Type: application/json"
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode == 200) {
+        $data = json_decode($response, true);
+        if (!empty($data['results']) && isset($data['results'][0]['id'])) {
+            return $data['results'][0];
+        }
+    }
+    return null;
+}
 
 function getMercadoPagoStatus($mpPaymentId, $token) {
     $url = "https://api.mercadopago.com/v1/payments/$mpPaymentId";
@@ -159,22 +199,18 @@ function getMercadoPagoStatus($mpPaymentId, $token) {
 
 /**
  * Marca como Aprovado
- * Colunas ajustadas: confirmedAt (subscriptions), soldAt (passwords), mpPaymentId/updatedAt (payments)
  */
 function markAsApproved($pdo, $paymentId, $subId, $mpPaymentId) {
     try {
         $pdo->beginTransaction();
 
-        // 1. Atualizar Subscription
         $stmtSub = $pdo->prepare('UPDATE subscriptions SET status = \'confirmed\', "confirmedAt" = NOW() WHERE id = ?');
         $stmtSub->execute([$subId]);
 
-        // 2. Atualizar Passwords (usa "subscriptionId")
         $stmtPass = $pdo->prepare('UPDATE passwords SET status = \'reserved\', "soldAt" = NOW() WHERE "subscriptionId" = ?');
         $stmtPass->execute([$subId]);
-
-        // 3. Atualizar Payment
-        $stmtPay = $pdo->prepare('UPDATE payments SET status = \'aproved\', "mpPaymentId" = ?, "updatedAt" = NOW() WHERE id = ?');
+        
+        $stmtPay = $pdo->prepare('UPDATE payments SET status = \'approved\', "mpPaymentId" = ?, "updatedAt" = NOW() WHERE id = ?');
         $stmtPay->execute([$mpPaymentId, $paymentId]);
 
         $pdo->commit();
@@ -193,17 +229,12 @@ function markAsClosed($pdo, $paymentId, $subId, $statusInfo) {
     try {
         $pdo->beginTransaction();
 
-        // 1. Atualizar Subscription
         $stmtSub = $pdo->prepare("UPDATE subscriptions SET status = 'cancelled' WHERE id = ?");
         $stmtSub->execute([$subId]);
 
-        // 2. Atualizar Passwords
-        // Libera a senha (AVAILABLE) e removemos o vinculo da venda? 
-        // No node você apenas setava AVAILABLE. Mantendo a lógica do Node:
-        $stmtPass = $pdo->prepare('UPDATE passwords SET status = \'AVAILABLE\' WHERE "subscriptionId" = ?');
+        $stmtPass = $pdo->prepare('UPDATE passwords SET status = \'available\' WHERE "subscriptionId" = ?');
         $stmtPass->execute([$subId]);
 
-        // 3. Atualizar Payment
         $stmtPay = $pdo->prepare('UPDATE payments SET status = ?, "updatedAt" = NOW() WHERE id = ?');
         $stmtPay->execute([$statusInfo, $paymentId]);
 
