@@ -17,7 +17,7 @@ if (!isset($_GET['token']) || $_GET['token'] !== $meuTokenSecreto) {
 // Configurações do Banco e API
 // No Render, o host interno geralmente não precisa de SSL, mas o padrão pgsql funciona.
 $dbHost = getenv('DB_HOST') ?: 'dpg-d3lbqr95pdvs73acpvo0-a'; 
-$dbName = getenv('DB_NAME') ?: 'vaquejada_meob';
+$dbName = getenv('DB_NAME') ?: 'DBNAME';
 $dbUser = getenv('DB_USER') ?: 'vaquejada';
 $dbPass = getenv('DB_PASS') ?: 'SUA_SENHA'; // Configure isso no Render Environment
 $dbPort = '5432';
