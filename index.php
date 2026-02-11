@@ -13,7 +13,6 @@ if (!isset($_GET['token']) || $_GET['token'] !== $meuTokenSecreto) {
     die("Acesso negado: Token inválido.");
 }
 
-// --- DADOS DO BANCO ---
 $dbHost = getenv('DB_HOST') ?: 'dpg-d3lbqr95pdvs73acpvo0-a.oregon-postgres.render.com';
 $dbName = getenv('DB_NAME') ?: 'vaquejada_meob';
 $dbUser = getenv('DB_USER') ?: 'vaquejada';
