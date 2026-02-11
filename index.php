@@ -59,7 +59,7 @@ echo "<h3>[" . date('Y-m-d H:i:s') . "] Iniciando verificação de pagamentos...
 // Trazemos "mpPreferenceId" para poder buscar caso falte o "mpPaymentId"
 $sql = 'SELECT id, "subscriptionId", "mpPaymentId", "mpPreferenceId", "createdAt", "externalReference" 
         FROM payments 
-        WHERE status = \'pending\' AND id = \'4c0809b5-a501-4926-a75a-54d3d6efd58b\''; 
+        WHERE status = \'pending\''; 
 
 try {
     $stmt = $pdo->query($sql);
