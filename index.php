@@ -49,17 +49,18 @@ try {
     die("Erro Crítico na Conexão DB: " . $e->getMessage());
 }
 
+
 // ==================================================================
 // 3. LÓGICA DE PROCESSAMENTO
 // ==================================================================
 
 echo "<h3>[" . date('Y-m-d H:i:s') . "] Iniciando verificação de pagamentos...</h3>";
 
-// Buscar pagamentos PENDING
-// Trazemos subscription_id pois ele é o elo com as senhas/ingressos
-$sql = "SELECT id, subscription_id, mp_payment_id, created_at, external_reference 
+// 1. QUERY AJUSTADA:
+// - Usamos aspas duplas " " nas colunas camelCase.
+$sql = 'SELECT id, "subscriptionId", "mpPaymentId", "createdAt", "externalReference" 
         FROM payments 
-        WHERE status = 'PENDING'"; 
+        WHERE status = \'pending\''; 
 
 try {
     $stmt = $pdo->query($sql);
@@ -76,11 +77,15 @@ if (count($payments) === 0) {
 
 foreach ($payments as $payment) {
     $paymentId = $payment['id'];
-    $subId = $payment['subscription_id']; 
-    $mpId = $payment['mp_payment_id'];
+    
+    // 2. CORREÇÃO NAS CHAVES DO ARRAY:
+    // O PDO retorna o nome da coluna exatamente como no SELECT ("subscriptionId")
+    $subId = $payment['subscriptionId']; 
+    $mpId = $payment['mpPaymentId'];
+    $createdAtVal = $payment['createdAt']; // Renomeei para evitar conflito
     
     // Tratamento de Datas
-    $createdAt = new DateTime($payment['created_at']);
+    $createdAt = new DateTime($createdAtVal);
     $now = new DateTime();
     
     // Diferença em minutos
@@ -92,7 +97,7 @@ foreach ($payments as $payment) {
     // --- CASO 1: Expirou o tempo (> 10 min) ---
     if ($diffMinutes > $timeoutMinutes) {
         echo "&nbsp;&nbsp;- <span style='color:red'>EXPIRADO. Cancelando localmente...</span><br>";
-        markAsClosed($pdo, $paymentId, $subId, 'CANCELLED');
+        markAsClosed($pdo, $paymentId, $subId, 'cancelled');
         echo "<hr>";
         continue; // Vai para o próximo
     }
@@ -109,7 +114,7 @@ foreach ($payments as $payment) {
             } 
             elseif (in_array($mpStatus, ['rejected', 'cancelled', 'expired'])) {
                 // Mapeia para o enum do seu banco
-                $localStatus = ($mpStatus === 'rejected') ? 'REJECTED' : 'CANCELLED';
+                $localStatus = ($mpStatus === 'rejected') ? 'rejected' : 'cancelled';
                 markAsClosed($pdo, $paymentId, $subId, $localStatus);
             }
         } else {
@@ -125,19 +130,16 @@ echo "<h4>Verificação concluída com sucesso.</h4>";
 
 
 // ==================================================================
-// 4. FUNÇÕES AUXILIARES
+// 4. FUNÇÕES AUXILIARES (AJUSTADAS PARA O SCHEMA)
 // ==================================================================
 
-/**
- * Consulta a API do Mercado Pago
- */
 function getMercadoPagoStatus($mpPaymentId, $token) {
     $url = "https://api.mercadopago.com/v1/payments/$mpPaymentId";
     
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 5); // Timeout curto para não travar
+    curl_setopt($ch, CURLOPT_TIMEOUT, 5); 
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         "Authorization: Bearer $token",
         "Content-Type: application/json"
@@ -156,27 +158,27 @@ function getMercadoPagoStatus($mpPaymentId, $token) {
 }
 
 /**
- * Marca como Aprovado (Atualiza Subscription, Passwords e Payment)
+ * Marca como Aprovado
+ * Colunas ajustadas: confirmedAt (subscriptions), soldAt (passwords), mpPaymentId/updatedAt (payments)
  */
 function markAsApproved($pdo, $paymentId, $subId, $mpPaymentId) {
     try {
         $pdo->beginTransaction();
 
-        // 1. Atualizar Subscription -> CONFIRMED
-        $stmtSub = $pdo->prepare("UPDATE subscriptions SET status = 'CONFIRMED', confirmed_at = NOW() WHERE id = ?");
+        // 1. Atualizar Subscription
+        $stmtSub = $pdo->prepare('UPDATE subscriptions SET status = \'confirmed\', "confirmedAt" = NOW() WHERE id = ?');
         $stmtSub->execute([$subId]);
 
-        // 2. Atualizar Passwords -> RESERVED
-        // Assume que 'passwords' tem 'subscription_id' ou lógica similar
-        $stmtPass = $pdo->prepare("UPDATE passwords SET status = 'RESERVED', sold_at = NOW() WHERE subscription_id = ?");
+        // 2. Atualizar Passwords (usa "subscriptionId")
+        $stmtPass = $pdo->prepare('UPDATE passwords SET status = \'reserved\', "soldAt" = NOW() WHERE "subscriptionId" = ?');
         $stmtPass->execute([$subId]);
 
-        // 3. Atualizar Payment -> APPROVED
-        $stmtPay = $pdo->prepare("UPDATE payments SET status = 'APPROVED', mp_payment_id = ?, updated_at = NOW() WHERE id = ?");
+        // 3. Atualizar Payment
+        $stmtPay = $pdo->prepare('UPDATE payments SET status = \'aproved\', "mpPaymentId" = ?, "updatedAt" = NOW() WHERE id = ?');
         $stmtPay->execute([$mpPaymentId, $paymentId]);
 
         $pdo->commit();
-        echo "&nbsp;&nbsp;- <span style='color:green'>SUCESSO: Pagamento APROVADO e registros atualizados.</span><br>";
+        echo "&nbsp;&nbsp;- <span style='color:green'>SUCESSO: Pagamento APROVADO.</span><br>";
 
     } catch (Exception $e) {
         $pdo->rollBack();
@@ -185,28 +187,28 @@ function markAsApproved($pdo, $paymentId, $subId, $mpPaymentId) {
 }
 
 /**
- * Marca como Fechado/Cancelado (Libera Passwords e Cancela Subscription)
+ * Marca como Fechado/Cancelado
  */
 function markAsClosed($pdo, $paymentId, $subId, $statusInfo) {
     try {
         $pdo->beginTransaction();
 
-        // 1. Atualizar Subscription -> CANCELLED
-        $stmtSub = $pdo->prepare("UPDATE subscriptions SET status = 'CANCELLED' WHERE id = ?");
+        // 1. Atualizar Subscription
+        $stmtSub = $pdo->prepare("UPDATE subscriptions SET status = 'cancelled' WHERE id = ?");
         $stmtSub->execute([$subId]);
 
-        // 2. Atualizar Passwords -> AVAILABLE (Libera os ingressos)
-        // Mantém subscription_id ou limpa? O Node apenas mudava status.
-        // Aqui vamos liberar o status para AVAILABLE para ser vendido novamente.
-        $stmtPass = $pdo->prepare("UPDATE passwords SET status = 'AVAILABLE' WHERE subscription_id = ?");
+        // 2. Atualizar Passwords
+        // Libera a senha (AVAILABLE) e removemos o vinculo da venda? 
+        // No node você apenas setava AVAILABLE. Mantendo a lógica do Node:
+        $stmtPass = $pdo->prepare('UPDATE passwords SET status = \'AVAILABLE\' WHERE "subscriptionId" = ?');
         $stmtPass->execute([$subId]);
 
-        // 3. Atualizar Payment -> CANCELLED/REJECTED
-        $stmtPay = $pdo->prepare("UPDATE payments SET status = ?, updated_at = NOW() WHERE id = ?");
+        // 3. Atualizar Payment
+        $stmtPay = $pdo->prepare('UPDATE payments SET status = ?, "updatedAt" = NOW() WHERE id = ?');
         $stmtPay->execute([$statusInfo, $paymentId]);
 
         $pdo->commit();
-        echo "&nbsp;&nbsp;- <span style='color:blue'>INFO: Pagamento $statusInfo e registros liberados.</span><br>";
+        echo "&nbsp;&nbsp;- <span style='color:blue'>INFO: Pagamento $statusInfo.</span><br>";
 
     } catch (Exception $e) {
         $pdo->rollBack();
